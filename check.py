@@ -1,35 +1,38 @@
 import json
 import os
-import re
 import sys
 
 import requests
+from bs4 import BeautifulSoup
 
 URL = "https://www.techno-aids.or.jp/tekisei/index.shtml"
 STATE_FILE = "state.json"
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
-# お知らせは「2026.07.01」のような日付＋タイトルの形式で並んでいるので、
-# その中から「全国平均貸与価格」というキーワードを含む行だけを拾う。
-PATTERN = re.compile(
-    r"(\d{4}\.\d{2}\.\d{2})[^\d\w]{0,5}([^\n<]{5,150}?全国平均貸与価格[^\n<]{0,100})"
-)
-
 
 def fetch_announcements():
+    """
+    全国平均貸与価格・貸与価格の上限の表を解析する。
+    各行には「pricelistXXXXXX.xlsx」という一覧ファイルへのリンクがあるので、
+    これをキーにして各回の発表を識別する。
+    """
     resp = requests.get(URL, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
-    # このサイトはShift_JIS系のエンコーディングのことがあるため自動判定させる
     resp.encoding = resp.apparent_encoding or "cp932"
-    html = resp.text
+    soup = BeautifulSoup(resp.text, "html.parser")
 
     seen = set()
     announcements = []
-    for date, title in PATTERN.findall(html):
-        title = re.sub(r"\s+", " ", title).strip()
-        key = f"{date} {title}"
-        if key not in seen:
-            seen.add(key)
-            announcements.append(key)
+    for tr in soup.find_all("tr"):
+        links = [a.get("href", "") for a in tr.find_all("a", href=True)]
+        pricelist_links = [l for l in links if "pricelist" in l]
+        if not pricelist_links:
+            continue
+        key = pricelist_links[0].rsplit("/", 1)[-1]
+        if key in seen:
+            continue
+        seen.add(key)
+        text = tr.get_text(" ", strip=True)
+        announcements.append(f"{key} | {text}")
     return announcements
 
 
@@ -65,7 +68,6 @@ def main():
             "お知らせを1件も取得できませんでした。"
             "サイトのHTML構造が変わった可能性があるため、check.pyの抽出条件を見直してください。"
         )
-        # 誤検知で全件を「新着」扱いしないよう、ここで終了する
         sys.exit(0)
 
     previous = set(load_state())
